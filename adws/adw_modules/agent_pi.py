@@ -21,7 +21,7 @@ from .utils import now_iso, operator_env
 
 PI_PATH = os.environ.get("PI_PATH", "pi")
 MODELS_JSON = os.environ.get("PI_MODELS_PATH",
-                             str(Path.home() / ".pi" / "agent" / "models.json"))
+                             str(Path.home() / ".pi" / "agent" / "models-store.json"))
 
 RESULT_SNIPPET_CHARS = 20_000   # tool output rides along whole; clip only guards pathological cases
 ARG_VALUE_CHARS = 20_000        # args too — the UI scrolls, it must not be handed cut-off data

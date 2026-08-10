@@ -20,6 +20,7 @@ bun test            # end-to-end API suite against a temp db
 ## Keyboard Shortcuts
 
 - `Cmd+N` / `Ctrl+N`: Create new post
+- `Cmd+Q` / `Ctrl+Q`: Open posts sidebar and focus search
 - `Cmd+S` / `Ctrl+S`: Save current post
 - `Cmd+Enter` / `Ctrl+Enter`: Cycle view mode (edit → split → preview)
 - `Cmd+Shift+F` / `Ctrl+Shift+F`: Toggle focus mode

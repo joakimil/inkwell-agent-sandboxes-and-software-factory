@@ -21,6 +21,8 @@ const ui = {
   searchInput: el('search-input'),
   searchClear: el('search-clear'),
   searchCount: el('search-count'),
+  hotkeyOverlay: el('hotkey-overlay'),
+  hotkeyOverlayList: el('hotkey-overlay-list'),
 };
 
 const drawer = {
@@ -43,6 +45,64 @@ let saveTimer = null;
 let pendingSave = null;
 let focusMode = false;
 let fontSize = 19;
+
+// --- hotkey overlay ------------------------------------------------------
+
+const HOTKEYS = [
+  { keys: ['⌘ N', 'Ctrl N'], desc: 'Create new post' },
+  { keys: ['⌘ S', 'Ctrl S'], desc: 'Save post immediately' },
+  { keys: ['⌘ ↵', 'Ctrl ↵'], desc: 'Cycle view mode (edit → split → preview)' },
+  { keys: ['⌘ Shift F', 'Ctrl Shift F'], desc: 'Toggle focus mode' },
+  { keys: ['⌘ +', 'Ctrl +'], desc: 'Increase font size' },
+  { keys: ['⌘ -', 'Ctrl -'], desc: 'Decrease font size' },
+  { keys: ['?', '⌘ /'], desc: 'Open keyboard shortcuts help' },
+  { keys: ['Esc'], desc: 'Close modal, menu, or drawer' },
+];
+
+function buildHotkeyOverlay() {
+  const list = ui.hotkeyOverlayList;
+  if (!list) return;
+  list.replaceChildren(...HOTKEYS.map((hk) => {
+    const li = document.createElement('li');
+    li.className = 'hotkey-overlay-item';
+
+    const desc = document.createElement('span');
+    desc.className = 'hotkey-overlay-desc';
+    desc.textContent = hk.desc;
+
+    const keys = document.createElement('span');
+    keys.className = 'hotkey-overlay-keys';
+    hk.keys.forEach((k, i) => {
+      if (i > 0) {
+        const slash = document.createElement('span');
+        slash.className = 'hotkey-overlay-sep';
+        slash.textContent = '/';
+        keys.appendChild(slash);
+      }
+      const kbd = document.createElement('kbd');
+      kbd.textContent = k;
+      keys.appendChild(kbd);
+    });
+
+    li.append(desc, keys);
+    return li;
+  }));
+}
+
+function showHotkeyOverlay() {
+  if (!ui.hotkeyOverlay) return;
+  // Only (re)build when transitioning from hidden to visible. Holding a key
+  // fires repeated keydowns; rebuilding the list on every repeat is what
+  // made the overlay shake.
+  if (ui.hotkeyOverlay.hidden) {
+    buildHotkeyOverlay();
+    ui.hotkeyOverlay.hidden = false;
+  }
+}
+
+function hideHotkeyOverlay() {
+  if (ui.hotkeyOverlay) ui.hotkeyOverlay.hidden = true;
+}
 
 async function api(method, path, body) {
   const res = await fetch(path, {
@@ -177,7 +237,36 @@ function calcReadingTime(wordCount) {
 
 // --- rendering ------------------------------------------------------------
 
+/** Builds a DOM fragment where every (case-insensitive) occurrence of query
+ *  is wrapped in <mark class="search-highlight">. Uses text nodes / textContent
+ *  so nothing is ever interpreted as HTML. */
+function highlightText(text, query) {
+  const frag = document.createDocumentFragment();
+  const q = (query || '').trim().toLowerCase();
+  if (!q || !text) {
+    frag.appendChild(document.createTextNode(text || ''));
+    return frag;
+  }
+  const lower = text.toLowerCase();
+  let i = 0;
+  while (i < text.length) {
+    const idx = lower.indexOf(q, i);
+    if (idx === -1) {
+      frag.appendChild(document.createTextNode(text.slice(i)));
+      break;
+    }
+    if (idx > i) frag.appendChild(document.createTextNode(text.slice(i, idx)));
+    const mark = document.createElement('mark');
+    mark.className = 'search-highlight';
+    mark.textContent = text.slice(idx, idx + q.length);
+    frag.appendChild(mark);
+    i = idx + q.length;
+  }
+  return frag;
+}
+
 function renderList() {
+  const query = currentSearchQuery;
   ui.list.replaceChildren(...posts.map((p) => {
     const item = document.createElement('button');
     item.type = 'button';
@@ -190,13 +279,20 @@ function renderList() {
 
     const title = document.createElement('span');
     title.className = 'post-title';
-    title.textContent = p.title || 'Untitled';
+    title.append(highlightText(p.title || 'Untitled', query));
 
     const when = document.createElement('span');
     when.className = 'post-time';
     when.textContent = relTime(p.updated_at);
 
     item.append(dot, title, when);
+
+    if (query && p.snippet) {
+      const snip = document.createElement('span');
+      snip.className = 'post-snippet';
+      snip.append(highlightText(p.snippet, query));
+      item.append(snip);
+    }
     item.addEventListener('click', () => {
       selectPost(p.id);
       closeDrawer();
@@ -531,6 +627,9 @@ document.addEventListener('keydown', (e) => {
   } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     e.preventDefault();
     if (current) cycleViewMode();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'q') {
+    e.preventDefault();
+    toggleDrawer();
   } else if ((e.key === '?' && !isInput) || ((e.metaKey || e.ctrlKey) && e.key === '/')) {
     e.preventDefault();
     toggleShortcutsModal();
@@ -554,6 +653,18 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('beforeunload', () => {
   if (saveTimer) save();
 });
+
+// --- hotkey overlay: hold Cmd/Ctrl to view, release to dismiss -----------
+
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey) showHotkeyOverlay();
+});
+
+document.addEventListener('keyup', (e) => {
+  if (!e.metaKey && !e.ctrlKey) hideHotkeyOverlay();
+});
+
+window.addEventListener('blur', hideHotkeyOverlay);
 
 // --- theme ----------------------------------------------------------------
 

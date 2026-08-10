@@ -6,6 +6,13 @@ import { Database } from "bun:sqlite";
 const APP_DIR = import.meta.dir;
 const PUBLIC_DIR = `${APP_DIR}/public`;
 const PORT = Number(process.env.PORT ?? 4501);
+const ADMIN_KEY = process.env.INKWELL_ADMIN_KEY;
+
+function isAdmin(req: Request): boolean {
+  if (!ADMIN_KEY) return false;
+  const auth = req.headers.get("authorization") ?? "";
+  return auth === `Bearer ${ADMIN_KEY}`;
+}
 
 type Post = {
   id: number;
@@ -212,6 +219,9 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
 
   // /api/posts
   if (segments.length === 2) {
+    if (method === "POST" || method === "PUT" || method === "DELETE") {
+      if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
+    }
     if (method === "GET") {
       const url = new URL(req.url);
       const query = url.searchParams.get("q") ?? url.searchParams.get("search") ?? "";
@@ -272,6 +282,7 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
 
   // /api/posts/:id/publish
   if (segments.length === 4 && segments[3] === "publish") {
+    if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
     if (method !== "POST") return json({ error: "method not allowed" }, 405);
     const post = getPost(id);
     if (!post) return notFound();
@@ -297,11 +308,13 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
   // /api/posts/:id
   if (segments.length === 3) {
     const post = getPost(id);
-    if (!post || post.status !== "published") return notFound();
+    if (!post) return notFound();
+    if (post.status !== "published" && !isAdmin(req)) return notFound();
 
     if (method === "GET") return json(post);
 
     if (method === "PUT") {
+      if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
       const body = await readBody(req);
       const title = typeof body.title === "string" ? body.title : post.title;
       const content = typeof body.content === "string" ? body.content : post.content;
@@ -319,6 +332,7 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
     }
 
     if (method === "DELETE") {
+      if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
       db().run("DELETE FROM posts WHERE id = ?", [id]);
       return json({ ok: true });
     }
