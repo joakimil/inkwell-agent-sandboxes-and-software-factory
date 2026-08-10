@@ -54,6 +54,20 @@ const now = () => new Date().toISOString();
 const wordCount = (content: string) =>
   content.trim() === "" ? 0 : content.trim().split(/\s+/).length;
 
+/** Builds a short plain-text window around the first (case-insensitive)
+ *  occurrence of query in content, for showing where a search matched. */
+function makeSnippet(content: string, query: string): string {
+  const c = content ?? "";
+  if (!c.trim() || !query) return "";
+  const idx = c.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return "";
+  const start = Math.max(0, idx - 40);
+  const end = Math.min(c.length, idx + query.length + 60);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < c.length ? "…" : "";
+  return `${prefix}${c.slice(start, end)}${suffix}`;
+}
+
 const getPost = (id: number) =>
   db().query("SELECT * FROM posts WHERE id = ?").get(id) as Post | null;
 
@@ -121,12 +135,12 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
             "SELECT COUNT(*) as total, COUNT(CASE WHEN status = 'published' THEN 1 END) as published, COUNT(CASE WHEN status = 'draft' THEN 1 END) as drafts FROM posts",
           )
           .get() as { total: number; published: number; drafts: number };
-        const posts = db().query("SELECT content FROM posts").all() as { content: string | null }[];
+        const posts = db().query("SELECT content FROM posts WHERE status = 'published'").all() as { content: string | null }[];
         const totalWords = posts.reduce((sum, p) => sum + wordCount(p.content ?? ""), 0);
         return json({
-          total: row.total,
+          total: row.published,
           published: row.published,
-          drafts: row.drafts,
+          drafts: 0,
           total_words: totalWords,
         });
       }
@@ -142,8 +156,8 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
         const hasTagsColumn = tableInfo.some((col) => col.name === "tags");
 
         const posts = hasTagsColumn
-          ? (db().query("SELECT title, tags FROM posts").all() as { title: string | null; tags?: string | null }[])
-          : (db().query("SELECT title FROM posts").all() as { title: string | null });
+          ? (db().query("SELECT title, tags FROM posts WHERE status = 'published'").all() as { title: string | null; tags?: string | null }[])
+          : (db().query("SELECT title FROM posts WHERE status = 'published'").all() as { title: string | null });
 
         const tagCounts: Record<string, number> = {};
 
@@ -207,23 +221,30 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
       if (trimmed) {
         const pattern = `%${trimmed}%`;
         rows = db()
-          .query("SELECT * FROM posts WHERE title LIKE ? OR content LIKE ? ORDER BY updated_at DESC, id DESC")
+          .query("SELECT * FROM posts WHERE status = 'published' AND (title LIKE ? OR content LIKE ?) ORDER BY updated_at DESC, id DESC")
           .all(pattern, pattern) as Post[];
       } else {
         rows = db()
-          .query("SELECT * FROM posts ORDER BY updated_at DESC, id DESC")
+          .query("SELECT * FROM posts WHERE status = 'published' ORDER BY updated_at DESC, id DESC")
           .all() as Post[];
       }
 
       return json(
-        rows.map((p) => ({
-          id: p.id,
-          title: p.title,
-          status: p.status,
-          updated_at: p.updated_at,
-          word_count: wordCount(p.content ?? ""),
-          target_word_count: p.target_word_count ?? 0,
-        })),
+        rows.map((p) => {
+          const summary: Record<string, unknown> = {
+            id: p.id,
+            title: p.title,
+            status: p.status,
+            updated_at: p.updated_at,
+            word_count: wordCount(p.content ?? ""),
+            target_word_count: p.target_word_count ?? 0,
+          };
+          if (trimmed) {
+            const snippet = makeSnippet(p.content ?? "", trimmed);
+            if (snippet) summary.snippet = snippet;
+          }
+          return summary;
+        }),
       );
     }
 
@@ -276,7 +297,7 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
   // /api/posts/:id
   if (segments.length === 3) {
     const post = getPost(id);
-    if (!post) return notFound();
+    if (!post || post.status !== "published") return notFound();
 
     if (method === "GET") return json(post);
 
