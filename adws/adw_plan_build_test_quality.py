@@ -75,7 +75,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                    description=f"Resolve the reported {what} failures")) as ph:
             previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,
                                          previous=quality.as_envelope(broken, what),
-                                         gates=[gates.diff_matches_claims]))
+                                         gates=[gates.diff_matches_claims, gates.scope_matches_plan]))
 
     verified = (quality_result is not None and quality_result.passed
                 and test_result is not None and test_result.passed)

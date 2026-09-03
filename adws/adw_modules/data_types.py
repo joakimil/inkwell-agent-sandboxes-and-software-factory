@@ -89,6 +89,15 @@ class PlanOutput(EnvelopeBase):
     # words for another agent's diff.
     commit_message: str = ""
 
+    # Every file the BUILD phase will create or modify, declared by the planner
+    # and derived from the plan's files-to-touch section. The build's scope gate
+    # enforces against this list (+ anything under specs/, always permitted): a
+    # builder that edits a file outside it fails the phase, so an agent cannot
+    # quietly drift beyond the plan. Stable name — gates and the planner prompt
+    # both reference it. Empty default keeps old planners parseable, with the
+    # strict consequence that an omitted list means "nothing outside specs/".
+    expected_changed_files: list[str] = Field(default_factory=list)
+
 
 class BuildOutput(EnvelopeBase):
     changed_files: list[str] = Field(default_factory=list)

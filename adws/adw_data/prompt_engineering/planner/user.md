@@ -26,7 +26,12 @@ Plan the work described in `prompt`.
    - **Copy it, do not retype it.** One bash call does the whole step:
      `mkdir -p specs && cp "<context_handoff_dir>/plan.md" "specs/<adw_id>_<slug>.md"`
      Writing the plan a second time through `write` re-emits every line you already wrote, which costs the whole document again in output tokens and lets the two copies drift.
-3. Emit your `Report` JSON, declaring BOTH paths in `artifacts`.
+3. Emit your `Report` JSON, declaring BOTH paths in `artifacts` and the exact
+   build file set in `expected_changed_files`:
+   - Walk the files-to-touch section of `plan.md` file by file and list every
+     path the implementation will create or modify — source, tests, fixtures,
+     config. A path the builder will touch but you omit fails the build gate.
+   - Never list `specs/` paths (always permitted). When in doubt, include the file.
 
 ## Report
 
@@ -37,6 +42,7 @@ Respond with ONLY valid JSON matching `PlanOutput` — no prose before or after:
   "status": "success",
   "summary": "<one sentence describing the plan>",
   "artifacts": ["<context_handoff_dir>/plan.md", "specs/<adw_id>_<slug>.md"],
+  "expected_changed_files": ["apps/inkwell/server.ts", "apps/inkwell/server.test.ts"],
   "commit_message": "<imperative one-line git subject for committing THIS PLAN DOCUMENT, not the work it describes — e.g. 'Add spec for the /health endpoint'>",
   "notes_for_next_agent": "<what the builder must know>"
 }

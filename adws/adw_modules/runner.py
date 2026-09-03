@@ -51,6 +51,10 @@ class Run:
         self.cost = 0.0
         self._seq = tracer.max_phase_seq(adw_id)   # a joined run continues the sequence
         self.repo_root = git_helper.repo_root()    # where every agent is spawned to work
+        # The commit this run started from. The scope gate diffs the builder's
+        # work against it, so "what changed in this build" is exact even when a
+        # box has run more than one ADW (the sbx branch carries prior commits).
+        self.baseline_sha = git_helper.rev("HEAD") if git_helper.is_repo() else ""
         self.session_dir = ensure_dir(Path(cfg.defaults.data_dir) / "sessions" / adw_id)
         self.context_handoff_dir = ensure_dir(self.session_dir / "context_handoff")
         self._agent_map_path = self.session_dir / "agent_map.json"

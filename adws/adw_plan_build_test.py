@@ -42,11 +42,13 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                description="Turn the request into an implementable plan")) as ph:
         plan = ph.call(AgentCall(output_type=PlanOutput, prompt=prompt,
                                  gates=[gates.artifacts_exist, gates.files_non_empty]))
+    # Stash the planner's declared file set where the build scope gate reads it.
+    run.expected_changed_files = list(plan.expected_changed_files)
 
     with run.phase(PhaseParams(name="build", kind="agent", owner="builder",
                                description="Implement the plan exactly")) as ph:
         previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt, previous=plan,
-                                     gates=[gates.artifacts_exist]))
+                                     gates=[gates.artifacts_exist, gates.scope_matches_plan]))
 
     test = None
     for i in range(1, MAX_FIX_LOOPS + 1):
@@ -64,7 +66,7 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml", adw
                                                "verbatim output")) as ph:
             previous = ph.call(AgentCall(output_type=BuildOutput, prompt=prompt,
                                          previous=quality.as_envelope(test, "tests"),
-                                         gates=[gates.artifacts_exist]))
+                                         gates=[gates.artifacts_exist, gates.scope_matches_plan]))
 
     # Only tested work gets committed — a red suite leaves the tree uncommitted.
     if test is not None and test.passed:

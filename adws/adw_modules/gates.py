@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from .data_types import EnvelopeBase, GateReport
+from . import git_helper
 
 TAIL_CHARS = 1000        # command output kept as evidence on a failure
 
@@ -65,6 +66,52 @@ def diff_matches_claims(envelope: EnvelopeBase, run) -> GateReport:
         p = Path(f)
         report.check(f, p.exists(),
                      f"exists, {_size(p)}" if p.exists() else "claimed changed file does not exist")
+    return report
+
+
+def scope_matches_plan(envelope: EnvelopeBase, run) -> GateReport:
+    """The build touched only what the PLAN declared — enforced on the diff.
+
+    Actual = everything the build changed against the run's baseline commit
+    (commits on the run branch plus working-tree edits) and every new untracked
+    file. Allowed = PlanOutput.expected_changed_files (declared by the planner
+    and stashed on the run by the workflow) plus anything under specs/ — the
+    one-spec-per-feature convention, so the planner's spec and a builder's own
+    spec write are always inside scope.
+
+    Anything outside that set is a scope breach. Violations flow back to the
+    builder as a gate correction through the standard loop (bounded retries),
+    and a breach that survives is a phase failure like any other gate failure —
+    it lands in the trace db and shows in manage list / the UI, no
+    special-casing. This is the guard that stops a builder from quietly
+    rewriting files the plan never named (the round-2 auth leak).
+    """
+    report = GateReport()
+    baseline = getattr(run, "baseline_sha", "") or ""
+    if not baseline:
+        report.check("baseline", False, "no run baseline commit — scope gate cannot run")
+        return report
+    expected = list(getattr(run, "expected_changed_files", []) or [])
+    # Committed-on-branch + working tree vs baseline, plus new untracked files
+    # (respects .gitignore, so adws_data/ and .env never count).
+    actual = sorted(set(git_helper.diff_files(baseline))
+                    | set(git_helper.untracked_files()))
+    if not actual:
+        report.check("scope", True, "no file changes detected against baseline")
+        return report
+    allowed = set(expected)
+    out: list[str] = []
+    for f in actual:
+        if f in allowed or f.startswith("specs/"):
+            report.check(f, True, "in scope")
+        else:
+            report.check(
+                f, False,
+                "out of scope — declare it in the plan's expected_changed_files or leave it out of the build")
+            out.append(f)
+    if out:
+        report.check("scope", False,
+                     f"{len(out)} file(s) outside the plan's declared scope: {', '.join(out)}")
     return report
 
 
