@@ -137,13 +137,26 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
   if (segments[1] === "stats") {
     if (segments.length === 2) {
       if (method === "GET") {
+        const admin = !!ADMIN_KEY && isAdmin(req);
         const row = db()
           .query(
             "SELECT COUNT(*) as total, COUNT(CASE WHEN status = 'published' THEN 1 END) as published, COUNT(CASE WHEN status = 'draft' THEN 1 END) as drafts FROM posts",
           )
           .get() as { total: number; published: number; drafts: number };
-        const posts = db().query("SELECT content FROM posts WHERE status = 'published'").all() as { content: string | null }[];
+        // Anonymous readers see the public view only (published == total,
+        // drafts hidden); an authenticated admin sees the full counts.
+        const posts = db()
+          .query(`SELECT content FROM posts ${admin ? "" : "WHERE status = 'published'"}`)
+          .all() as { content: string | null }[];
         const totalWords = posts.reduce((sum, p) => sum + wordCount(p.content ?? ""), 0);
+        if (admin) {
+          return json({
+            total: row.total,
+            published: row.published,
+            drafts: row.drafts,
+            total_words: totalWords,
+          });
+        }
         return json({
           total: row.published,
           published: row.published,
@@ -159,12 +172,13 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
   if (segments[1] === "tags") {
     if (segments.length === 2) {
       if (method === "GET") {
+        const admin = !!ADMIN_KEY && isAdmin(req);
         const tableInfo = db().query("PRAGMA table_info(posts)").all() as { name: string }[];
         const hasTagsColumn = tableInfo.some((col) => col.name === "tags");
 
         const posts = hasTagsColumn
-          ? (db().query("SELECT title, tags FROM posts WHERE status = 'published'").all() as { title: string | null; tags?: string | null }[])
-          : (db().query("SELECT title FROM posts WHERE status = 'published'").all() as { title: string | null });
+          ? (db().query(`SELECT title, tags FROM posts ${admin ? "" : "WHERE status = 'published'"}`).all() as { title: string | null; tags?: string | null }[])
+          : (db().query(`SELECT title FROM posts ${admin ? "" : "WHERE status = 'published'"}`).all() as { title: string | null });
 
         const tagCounts: Record<string, number> = {};
 
@@ -220,22 +234,28 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
   // /api/posts
   if (segments.length === 2) {
     if (method === "POST" || method === "PUT" || method === "DELETE") {
-      if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
+      if (!ADMIN_KEY || !isAdmin(req)) return json({ error: "unauthorized" }, 401);
     }
     if (method === "GET") {
       const url = new URL(req.url);
       const query = url.searchParams.get("q") ?? url.searchParams.get("search") ?? "";
       const trimmed = query.trim();
+      // Anonymous readers see only published posts; an authenticated admin sees
+      // every status (the full writing view). Guarded exactly like the write
+      // routes: no key configured ⇒ admin is always false ⇒ public view only.
+      const admin = !!ADMIN_KEY && isAdmin(req);
 
       let rows: Post[];
       if (trimmed) {
         const pattern = `%${trimmed}%`;
         rows = db()
-          .query("SELECT * FROM posts WHERE status = 'published' AND (title LIKE ? OR content LIKE ?) ORDER BY updated_at DESC, id DESC")
+          .query(
+            `SELECT * FROM posts ${admin ? "WHERE" : "WHERE status = 'published' AND"} (title LIKE ? OR content LIKE ?) ORDER BY updated_at DESC, id DESC`,
+          )
           .all(pattern, pattern) as Post[];
       } else {
         rows = db()
-          .query("SELECT * FROM posts WHERE status = 'published' ORDER BY updated_at DESC, id DESC")
+          .query(`SELECT * FROM posts ${admin ? "" : "WHERE status = 'published'"} ORDER BY updated_at DESC, id DESC`)
           .all() as Post[];
       }
 
@@ -282,7 +302,7 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
 
   // /api/posts/:id/publish
   if (segments.length === 4 && segments[3] === "publish") {
-    if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
+    if (!ADMIN_KEY || !isAdmin(req)) return json({ error: "unauthorized" }, 401);
     if (method !== "POST") return json({ error: "method not allowed" }, 405);
     const post = getPost(id);
     if (!post) return notFound();
@@ -309,12 +329,14 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
   if (segments.length === 3) {
     const post = getPost(id);
     if (!post) return notFound();
-    if (post.status !== "published" && !isAdmin(req)) return notFound();
+    // Drafts are hidden unless an authenticated admin is reading; published
+    // posts are public. Fail-closed: no key ⇒ admin is false ⇒ drafts 404.
+    if (post.status !== "published" && !(!!ADMIN_KEY && isAdmin(req))) return notFound();
 
     if (method === "GET") return json(post);
 
     if (method === "PUT") {
-      if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
+      if (!ADMIN_KEY || !isAdmin(req)) return json({ error: "unauthorized" }, 401);
       const body = await readBody(req);
       const title = typeof body.title === "string" ? body.title : post.title;
       const content = typeof body.content === "string" ? body.content : post.content;
@@ -332,7 +354,7 @@ async function handleApi(req: Request, pathname: string): Promise<Response> {
     }
 
     if (method === "DELETE") {
-      if (!isAdmin(req)) return json({ error: "unauthorized" }, 401);
+      if (!ADMIN_KEY || !isAdmin(req)) return json({ error: "unauthorized" }, 401);
       db().run("DELETE FROM posts WHERE id = ?", [id]);
       return json({ ok: true });
     }

@@ -7,6 +7,15 @@ import { join } from "node:path";
 const DB_PATH = join(tmpdir(), `inkwell-test-${Date.now()}-${process.pid}.db`);
 process.env.INKWELL_DB = DB_PATH; // read lazily on first query, so this lands in time
 
+// The suite needs an admin key or every write/publish/delete test would 401.
+// Round-2 lesson: with NO key configured, the fail-closed guards made the suite
+// red, and the sandbox builder "fixed" the red suite by weakening auth — the
+// exact security hole this test now pins shut. The canonical server is fail-
+// closed (`!ADMIN_KEY || !isAdmin`); the happy path here gives it a key, and the
+// regression test at the bottom proves the no-key path 401s anyway.
+const TEST_ADMIN_KEY = "inkwell-test-admin-key";
+process.env.INKWELL_ADMIN_KEY = TEST_ADMIN_KEY; // read by the import below, so land it first
+
 // Imported after the env assignment is what matters at call time, not import time.
 const { handleRequest, closeDb } = await import("./server.ts");
 
@@ -26,7 +35,13 @@ afterAll(() => {
   }
 });
 
-const api = (path: string, init?: RequestInit) => fetch(`${base}/api${path}`, init);
+const api = (path: string, init?: RequestInit) => {
+  // Attach the suite's admin key on every request unless the caller explicitly
+  // sent an Authorization header (the 401 regression tests do).
+  const headers = new Headers(init?.headers);
+  if (!headers.has("authorization")) headers.set("authorization", `Bearer ${TEST_ADMIN_KEY}`);
+  return fetch(`${base}/api${path}`, { ...init, headers });
+};
 
 const post = (path: string, body?: unknown) =>
   api(path, {
@@ -712,4 +727,60 @@ test("theme tokens, light mode, and theme toggle controls are present", async ()
   expect(js).toContain("inkwell-theme");
   expect(js).toContain("availableThemes");
   expect(js).toContain("applyTheme");
+});
+
+test("fail-closed: no admin key → every write/publish/delete 401s; wrong token with a key 401s", async () => {
+  // A WRONG token against the main (keyed) server is rejected — proves the
+  // guards actually check credentials, not just that a key exists.
+  const bad = await fetch(`${base}/api/posts`, {
+    method: "POST",
+    headers: { authorization: "Bearer definitely-not-the-key", "content-type": "application/json" },
+    body: "{}",
+  });
+  expect(bad.status).toBe(401);
+
+  // The NO-KEY path: import the server as a fresh module instance with the
+  // admin key cleared (Bun treats "?nokey=v1" as a distinct module, so the
+  // top-level `const ADMIN_KEY = process.env...` is re-read). The fail-closed
+  // guards must reject every mutating route before any db write happens.
+  // Fail-closed also hides drafts: a no-key reader gets 404 (not the row) for
+  // draft ids, and 200 for published ids.
+  const draftRow = await (await post("/posts", { title: "hidden-draft" })).json();
+  const pubRow = await (await post("/posts", { title: "public-post" })).json();
+  await post(`/posts/${pubRow.id}/publish`); // publish on the keyed server
+  const savedKey = process.env.INKWELL_ADMIN_KEY;
+  try {
+    process.env.INKWELL_ADMIN_KEY = ""; // falsy → treated as unconfigured
+    const { handleRequest: handleNoKey, closeDb: closeNoKey } = await import("./server.ts?nokey=v1");
+    const noKeyServer = Bun.serve({ port: 0, fetch: handleNoKey });
+    try {
+      const b = `http://localhost:${noKeyServer.port}`;
+      const postRes = await fetch(`${b}/api/posts`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(postRes.status).toBe(401);
+
+      // Published id → the fail-closed write guards 401 before any mutation.
+      const delRes = await fetch(`${b}/api/posts/${pubRow.id}`, { method: "DELETE" });
+      expect(delRes.status).toBe(401);
+
+      const putRes = await fetch(`${b}/api/posts/${pubRow.id}`, {
+        method: "PUT", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(putRes.status).toBe(401);
+
+      const pubRes = await fetch(`${b}/api/posts/${pubRow.id}/publish`, { method: "POST" });
+      expect(pubRes.status).toBe(401);
+
+      // Reads stay fail-closed + public-only: drafts are hidden as 404, the
+      // published row is readable — exactly the safety split.
+      expect((await fetch(`${b}/api/posts/${draftRow.id}`)).status).toBe(404);
+      expect((await fetch(`${b}/api/posts/${pubRow.id}`)).status).toBe(200);
+    } finally {
+      noKeyServer.stop(true);
+      closeNoKey(); // never touched the db — the fail-closed guards run before any write
+    }
+  } finally {
+    process.env.INKWELL_ADMIN_KEY = savedKey; // restore for the rest of the suite
+  }
 });
