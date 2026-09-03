@@ -48,7 +48,13 @@ def commit_all(message: str) -> str:
             "repo root (and make a first commit) before running an ADW that commits.")
     _git("add", "-A")
     if not _git("status", "--porcelain"):
-        raise RuntimeError("nothing to commit — the preceding phases changed no files")
+        # Clean tree is SUCCESS, not an error: the builder agent often commits
+        # its own work during its phase, and a later commit phase must not
+        # report fail for work that already landed. Return the current HEAD so
+        # the phase log shows exactly which commit carries the run's output — a
+        # returned sha equal to the run's baseline sha means the run produced no
+        # new commits, which stays visible in the trace instead of a red phase.
+        return _git("rev-parse", "--short", "HEAD")
     _git("commit", "-m", message)
     return _git("rev-parse", "--short", "HEAD")
 
