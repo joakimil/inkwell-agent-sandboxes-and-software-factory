@@ -114,9 +114,17 @@ execute RUN_ID PROMPT CONFIG="" ADW="sdlc" *EXTRA:
         fi
         sleep 5
     done
+    # No banner within 60s is NOT yet a warning: a cool or scheduling-slowed VM
+    # can take ~70s to print the banner even though the run is healthy. Warn only
+    # when the banner is missing AND the recorded pid is gone — that pairing is
+    # the real early-death signal (justfile parse error, dead key, nohup fail).
     if [ -z "$banner" ]; then
-        echo "[WARN] {{RUN_ID}}: no adw_id banner in run.log after 60s — SDLC may have died early (pid $PID recorded)." >&2
-        echo "[WARN] inspect it: just sbx run cmd {{RUN_ID}} 'tail -20 run.log'" >&2
+        if ssh "$VM".exe.xyz "ps -p ${PID:-0} -o pid= > /dev/null 2>&1" 2>/dev/null; then
+            echo "→ {{RUN_ID}}: no adw_id banner yet after 60s, but pid $PID is alive — still booting; re-check with: just sbx run cmd {{RUN_ID}} 'tail -5 run.log'"
+        else
+            echo "[WARN] {{RUN_ID}}: no adw_id banner in run.log after 60s AND pid $PID is gone — SDLC likely died early." >&2
+            echo "[WARN] inspect it: just sbx run cmd {{RUN_ID}} 'tail -20 run.log'" >&2
+        fi
     else
         echo "→ SDLC banner confirmed (adw_id present in run.log)"
     fi
