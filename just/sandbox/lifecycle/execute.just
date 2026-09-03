@@ -98,4 +98,26 @@ execute RUN_ID PROMPT CONFIG="" ADW="sdlc" *EXTRA:
 
     "$RR" set {{RUN_ID}} pid="$PID"
     echo "→ pid $PID recorded; SDLC is running detached"
+
+    # Staleness-lite liveness probe: a pid only proves SPAWN, and the cookbook
+    # itself warns that a justfile parse error or a dead key dies a millisecond
+    # in. The SDLC prints its `adw_id:` banner within a second or two of a
+    # healthy start, so wait for that banner (up to 60s) and surface a non-fatal
+    # warning if it never appears. Returns 0 either way — this alerts, never
+    # aborts. (The real staleness watchdog is `just sbx run watch <run-id>`, a
+    # 5-minute events.jsonl growth monitor for a run already underway.)
+    banner=''
+    for i in $(seq 1 12); do
+        if ssh "$VM".exe.xyz "grep -q 'adw_id:' run.log" 2>/dev/null; then
+            banner=yes
+            break
+        fi
+        sleep 5
+    done
+    if [ -z "$banner" ]; then
+        echo "[WARN] {{RUN_ID}}: no adw_id banner in run.log after 60s — SDLC may have died early (pid $PID recorded)." >&2
+        echo "[WARN] inspect it: just sbx run cmd {{RUN_ID}} 'tail -20 run.log'" >&2
+    else
+        echo "→ SDLC banner confirmed (adw_id present in run.log)"
+    fi
     echo "→ watch it:  just sbx run cmd {{RUN_ID}} 'tail -f run.log'"

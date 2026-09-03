@@ -88,3 +88,41 @@ agent RUN_ID PROMPT:
     # Only after a successful turn: a first call that died never created a
     # session, and --resume on a session that does not exist would fail forever.
     touch "$STARTED"
+
+# usage: just sbx run watch <run-id> [stale_seconds]
+# staleness watchdog for a detached SDLC: polls the factory's events.jsonl every
+# 30s and, once a factory session exists, warns (stderr) when the file has not
+# grown for more than STALE seconds (default 300 = 5 min). Alert-only: it never
+# aborts the run and exits 0 after warning, so a human or another agent can
+# intervene. Ctrl-C stops a long-running watch. The execute recipe's banner probe
+# covers the first minute; this covers the rest of the run.
+watch RUN_ID *ARGS:
+    #!/usr/bin/env bash
+    set -u
+    RR="{{justfile_directory()}}/sandbox_mount/host/run_record.py"
+    VM=$("$RR" get {{RUN_ID}} vm_name)
+    [ -n "$VM" ] || { echo "run watch {{RUN_ID}}: no vm_name in the run record — is it mounted?" >&2; exit 1; }
+    STALE="${1:-300}"
+    POLL=30
+    seen=0
+    quiet=0
+    echo "→ run watch {{RUN_ID}} on $VM — warns if events.jsonl goes quiet > ${STALE}s (alert only; Ctrl-C to stop)"
+    while true; do
+        out=$(ssh "$VM".exe.xyz 'cd app && f=$(ls -t adws/adw_data/sessions/*/events.jsonl 2>/dev/null | head -1); if [ -n "$f" ]; then stat -c %s\ %Y "$f"; else echo NO_SESSION_YET; fi' 2>/dev/null)
+        if [[ "$out" == NO_SESSION_YET ]]; then
+            quiet=$((quiet + POLL))
+            [ "$seen" = 1 ] && echo "[$(date +%H:%M:%S)] watch: no factory session writes for ${quiet}s — run {{RUN_ID}} may be quiet or stuck" >&2
+        else
+            read -r size mtime <<< "$out"
+            [ -n "${mtime:-}" ] || { echo "watch: could not read events.jsonl on $VM" >&2; exit 1; }
+            now=$(date +%s)
+            age=$((now - mtime))
+            if [ "$age" -gt "$STALE" ]; then
+                echo "[$(date +%H:%M:%S)] WARN: events.jsonl (${size}B) not written for ${age}s (stale > ${STALE}s) — run {{RUN_ID}} may be wedged." >&2
+                echo "[WARN] check: just sbx run cmd {{RUN_ID}} 'tail -5 run.log'  ·  restart the run with just sbx lifecycle execute {{RUN_ID}} \"<prompt>\"" >&2
+                exit 0
+            fi
+        fi
+        seen=1
+        sleep "$POLL"
+    done
