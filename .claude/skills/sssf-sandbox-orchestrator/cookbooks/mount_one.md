@@ -194,6 +194,12 @@ mounted: inkwell-e2e-20260804-e08747
   destroy: just sbx lifecycle teardown inkwell-e2e-20260804-e08747
 ```
 
+> **After `just sbx lifecycle execute <run-id> "<prompt>"` returns, re-run `just sbx lifecycle
+> observe <run-id>`** so the running app picks up the freshly built code. `observe` starts the app
+> server at mount time — BEFORE the factory has committed anything — and a server never restarted
+> keeps serving the pre-build code (old routes, an empty db). `observe` is idempotent: it leaves a
+> live server alone, so re-running after a build only restarts what needs the new code.
+
 ## Two things that bite
 
 - **Do not run two `just sbx mount`s concurrently from this repo.** `mount` learns the generated run id
