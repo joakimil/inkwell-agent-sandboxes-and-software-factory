@@ -61,6 +61,22 @@ setup RUN_ID CONFIG="":
     # Clear the sentinel first: re-running setup on the same VM would otherwise
     # find the PREVIOUS run's sentinel and declare victory before provision ran.
     echo "[setup] 1/3 provisioning (streaming provision.sh output)"
+    # The filled payload (canonical SSSF) does not carry provisioning scaffolding;
+    # the orchestrator owns it. Push guest/ into the clone so provision.sh and its
+    # models.json.tmpl are present no matter which repo FILL cloned. Payload-specific
+    # provision steps (visualizer, apps/*) stay guarded by -f/-d and skip cleanly.
+    "${SSH[@]}" 'mkdir -p app/sandbox_mount/guest' < /dev/null \
+      || gate_fail "cannot reach ${HOST} over ssh"
+    scp -q -o ConnectTimeout=15 \
+      sandbox_mount/guest/provision.sh \
+      sandbox_mount/guest/models.json.tmpl \
+      "${HOST}:app/sandbox_mount/guest/" \
+      || gate_fail "could not push guest/ scaffolding to ${HOST}"
+    # Injected scaffolding must not dirty the worktree the git-integrity gate
+    # inspects. A local exclude (never the tracked .gitignore) keeps sandbox_mount/
+    # invisible to `git status` without touching payload history.
+    "${SSH[@]}" 'cd app && grep -qxF "/sandbox_mount/" .git/info/exclude 2>/dev/null || echo "/sandbox_mount/" >> .git/info/exclude' < /dev/null \
+      || gate_fail "could not exclude sandbox_mount/ on ${HOST}"
     "${SSH[@]}" 'rm -f /tmp/PROVISION_READY' < /dev/null \
       || gate_fail "cannot reach ${HOST} over ssh"
     # < /dev/null so ssh does not swallow this script's stdin; output streams live.

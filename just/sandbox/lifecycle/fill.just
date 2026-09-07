@@ -21,11 +21,15 @@ fill RUN_ID *SHA:
     # upstream is 2 commits behind the code this workspace runs (public API
     # filtering + app improvements). The sandbox must build the project we
     # actually work on, or the note it ships is stale by construction.
-    REPO="https://github.com/joakimil/super-simple-software-factory.git"
+    REPO="git@github.com:joakimil/super-simple-software-factory.git"
     # The canonical SSSF source-of-truth lives on the `example` branch of the
     # canonical repo (the `main` branch is skill-only). SHA arg still wins when
     # the caller passes one, so anyone who needs a different ref can override.
     BRANCH="example"
+    # The canonical is private; the VM needs an SSH key to read it. The host
+    # holds the deploy key; we scp it to the VM and point git at it for the
+    # clone. Override via SSSF_DEPLOY_KEY env var to use a different key path.
+    DEPLOY_KEY_PATH="${SSSF_DEPLOY_KEY:-$HOME/.ssh/sssf/deploy}"
 
     # *SHA is variadic: it interpolates to "" when unpinned, space-joined otherwise.
     # Only the first token is meaningful; extra words are a caller mistake we ignore.
@@ -41,6 +45,18 @@ fill RUN_ID *SHA:
 
     echo "==> fill: $VM — cloning app/ ${PIN:+(pin $PIN)}"
 
+    # The canonical repo is private, so the VM needs the deploy key before it can
+    # clone. Push it in over ssh (the *.exe.xyz host key is already trusted), lock
+    # it to 600, and seed the VM's known_hosts with github.com so the clone's
+    # StrictHostKeyChecking=accept-new never has to prompt on a TTY-less box.
+    if [ ! -f "$DEPLOY_KEY_PATH" ]; then
+        echo "fill: deploy key not found at $DEPLOY_KEY_PATH (set SSSF_DEPLOY_KEY)" >&2
+        exit 1
+    fi
+    ssh "$HOST" 'mkdir -p ~/.ssh && chmod 700 ~/.ssh'
+    scp -q "$DEPLOY_KEY_PATH" "$HOST:.ssh/id_sssf"
+    ssh "$HOST" 'chmod 600 ~/.ssh/id_sssf && ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null && sort -u -o ~/.ssh/known_hosts ~/.ssh/known_hosts'
+
     # One remote script over stdin instead of a quoted one-liner: nothing here has
     # to survive two layers of shell quoting. Progress goes to stderr so stdout
     # carries exactly one machine-readable line: "<head_sha> <intended_sha>".
@@ -50,6 +66,13 @@ fill RUN_ID *SHA:
     # MEASURED: with the pin second, an unpinned fill died on `$3: unbound variable`.
     CLONE_OUT=$(ssh "$HOST" bash -s -- "$REPO" "{{RUN_ID}}" "$BRANCH" "$PIN" <<'REMOTE'
     set -euo pipefail
+    # The VM is a non-interactive exeuntu image. A public https clone should not
+    # need a credential, but the host git config inherits `credential.helper=osxkeychain`
+    # (set by setup.just for the OpenRouter provisioning key mint) which is macOS-only.
+    # Forcing an empty helper + no terminal prompts lets the public clone succeed
+    # without an interactive prompt that the VM cannot serve.
+    export GIT_TERMINAL_PROMPT=0
+    git config --global --unset credential.helper 2>/dev/null || true
     repo="$1"; run_id="$2"; branch="${3:-main}"; pin="${4:-}"
 
     if [ -d app/.git ]; then
@@ -65,6 +88,10 @@ fill RUN_ID *SHA:
         fi
     else
         rm -rf app   # half-finished clone or a non-repo app/; the VM is disposable, the dir is not state
+        # Use the deploy key for ssh; StrictHostKeyChecking=accept-new so the
+        # VM (which we just populated with ssh-keyscan) accepts github.com's
+        # host key without a prompt.
+        export GIT_SSH_COMMAND="ssh -i \$HOME/.ssh/id_sssf -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
         git clone --quiet --branch "$branch" "$repo" app
     fi
 
