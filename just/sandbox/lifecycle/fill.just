@@ -21,7 +21,11 @@ fill RUN_ID *SHA:
     # upstream is 2 commits behind the code this workspace runs (public API
     # filtering + app improvements). The sandbox must build the project we
     # actually work on, or the note it ships is stale by construction.
-    REPO="https://github.com/joakimil/inkwell-agent-sandboxes-and-software-factory.git"
+    REPO="https://github.com/joakimil/super-simple-software-factory.git"
+    # The canonical SSSF source-of-truth lives on the `example` branch of the
+    # canonical repo (the `main` branch is skill-only). SHA arg still wins when
+    # the caller passes one, so anyone who needs a different ref can override.
+    BRANCH="example"
 
     # *SHA is variadic: it interpolates to "" when unpinned, space-joined otherwise.
     # Only the first token is meaningful; extra words are a caller mistake we ignore.
@@ -44,9 +48,9 @@ fill RUN_ID *SHA:
     # args into one string that the remote login shell re-parses, so an empty "$PIN"
     # in the middle collapses to nothing and every argument after it shifts left.
     # MEASURED: with the pin second, an unpinned fill died on `$3: unbound variable`.
-    CLONE_OUT=$(ssh "$HOST" bash -s -- "$REPO" "{{RUN_ID}}" "$PIN" <<'REMOTE'
+    CLONE_OUT=$(ssh "$HOST" bash -s -- "$REPO" "{{RUN_ID}}" "$BRANCH" "$PIN" <<'REMOTE'
     set -euo pipefail
-    repo="$1"; run_id="$2"; pin="${3:-}"
+    repo="$1"; run_id="$2"; branch="${3:-main}"; pin="${4:-}"
 
     if [ -d app/.git ]; then
         # Idempotent re-run (also the golden-VM cp path, where app/ arrives stale).
@@ -55,17 +59,20 @@ fill RUN_ID *SHA:
         if [ -z "$pin" ]; then
             # ff-only: a sandbox that already ran an ADW carries commits that ARE
             # the run's output. Never reset over them; report and keep going.
-            if ! { git -C app checkout --quiet main && git -C app merge --ff-only --quiet origin/main; }; then
+            if ! { git -C app checkout --quiet main && git -C app merge --ff-only --quiet "origin/$branch"; }; then
                 echo "WARN: could not fast-forward app/ to origin/main — keeping current HEAD" >&2
             fi
         fi
     else
         rm -rf app   # half-finished clone or a non-repo app/; the VM is disposable, the dir is not state
-        git clone --quiet "$repo" app
+        git clone --quiet --branch "$branch" "$repo" app
     fi
 
     if [ -n "$pin" ]; then
-        git -C app checkout --quiet "$pin"
+        # A SHA pin wins over BRANCH: caller asked for a specific commit, we
+        # honor it. Detach the worktree to avoid the "already on a branch"
+        # warning the default checkout would emit.
+        git -C app checkout --quiet --detach "$pin"
     fi
 
     # The run branch. Created at whatever HEAD already is, so it adds no commit,
