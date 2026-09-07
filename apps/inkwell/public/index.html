@@ -80,6 +80,16 @@
         </div>
         <span id="reading-time" class="meta reading-time">0 min read</span>
       </div>
+      <div class="menu-section" aria-label="Settings">
+        <label class="menu-label" for="admin-key-input">Admin key</label>
+        <input id="admin-key-input" class="admin-key-input" type="password" placeholder="inkwell-admin-key" autocomplete="off" spellcheck="false" title="INKWELL_ADMIN_KEY — local to this browser">
+        <div class="menu-row" style="margin-top:6px">
+          <button id="admin-key-save" class="menu-item" type="button" title="Store the key in this browser only">save</button>
+          <span class="menu-row-spacer"></span>
+          <button id="admin-key-clear" class="menu-item" type="button" title="Remove the stored key">clear</button>
+        </div>
+        <p class="menu-hint">localStorage only. The server keeps its own INKWELL_ADMIN_KEY; if they differ, writes 401.</p>
+      </div>
       <div class="menu-section menu-actions" aria-label="Actions">
         <button id="shortcuts-toggle" class="menu-item" type="button" title="Open keyboard shortcuts">shortcuts <kbd class="key-hint">?</kbd></button>
         <button id="publish" class="menu-item" type="button">publish</button>

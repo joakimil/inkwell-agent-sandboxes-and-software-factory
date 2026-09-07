@@ -42,8 +42,6 @@ const menu = {
 let posts = [];        // sidebar summaries, newest first
 let current = null;    // full post being edited
 let saveTimer = null;
-let lastSavedAt = null;        // ms timestamp; drives the "saved Ns ago" display
-let savedAgoTimer = null;      // setInterval handle for the relative-time refresh
 let pendingSave = null;
 let focusMode = false;
 let fontSize = 19;
@@ -106,14 +104,31 @@ function hideHotkeyOverlay() {
   if (ui.hotkeyOverlay) ui.hotkeyOverlay.hidden = true;
 }
 
+// Read the admin key from localStorage at call time, not at module load,
+// so a key entered in the menu takes effect on the very next request.
+function adminHeaders(extra) {
+  const k = (typeof localStorage !== 'undefined') ? localStorage.getItem('inkwell-admin-key') : null;
+  const h = { ...(extra || {}) };
+  if (k) h['Authorization'] = `Bearer ${k}`;
+  return h;
+}
+
 async function api(method, path, body) {
+  const hasBody = body !== undefined;
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: adminHeaders(hasBody ? { 'Content-Type': 'application/json' } : undefined),
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status}`);
   return res.status === 204 ? null : res.json();
+}
+
+// True when the user has stored an admin key in this browser. The header
+// itself is sent only on requests that need it; this flag is the
+// "are writes allowed from this tab?" answer for the UI.
+function hasAdminKey() {
+  try { return !!localStorage.getItem('inkwell-admin-key'); } catch { return false; }
 }
 
 // --- markdown -------------------------------------------------------------
@@ -362,34 +377,9 @@ function updateTotals() {
   ui.totalWords.textContent = `${totalWords} ${totalWords === 1 ? 'word' : 'words'}`;
 }
 
-function formatSavedAgo(ms) {
-  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (s < 5) return 'saved just now';
-  if (s < 60) return `saved ${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `saved ${m}m ago`;
-  const h = Math.floor(m / 60);
-  return `saved ${h}h ago`;
-}
-
 function setSaveState(state) {
-  // When we are settled (no timer running, no in-flight request) and a save
-  // timestamp exists, prefer the relative-time form. Any other state — saving,
-  // save failed, no save yet — renders verbatim so the user sees exactly what
-  // the system is doing.
-  if (state === 'saved' && lastSavedAt && !saveTimer && !pendingSave) {
-    ui.save.textContent = formatSavedAgo(lastSavedAt);
-  } else {
-    ui.save.textContent = state;
-  }
+  ui.save.textContent = state;
   ui.save.classList.toggle('busy', state !== 'saved');
-}
-
-// Re-render the "saved Ns ago" label every 30s so it stays fresh without
-// forcing a re-save. Cheap; runs only when the indicator is in its idle form.
-function startSavedAgoTicker() {
-  if (savedAgoTimer) return;
-  savedAgoTimer = setInterval(() => setSaveState('saved'), 30_000);
 }
 
 // --- data flow ------------------------------------------------------------
@@ -420,7 +410,6 @@ async function save() {
     .then((post) => {
       if (current && current.id === post.id) current = post;
       mergeSummary(post);
-      lastSavedAt = Date.now();
       setSaveState('saved');
     })
     .catch((err) => {
@@ -550,6 +539,28 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Admin-key settings: read/write localStorage, mirror to the topbar badge.
+function bindAdminKeyInput() {
+  const input = document.getElementById('admin-key-input');
+  const save = document.getElementById('admin-key-save');
+  const clear = document.getElementById('admin-key-clear');
+  if (!input) return;
+  try { input.value = localStorage.getItem('inkwell-admin-key') || ''; } catch { /* private mode */ }
+  if (save) save.addEventListener('click', () => {
+    try { localStorage.setItem('inkwell-admin-key', input.value); } catch { /* private mode */ }
+    renderAdminBadge();
+    // Re-render the empty state so a "Create new" button may now appear.
+    if (!posts.length) renderEmpty();
+  });
+  if (clear) clear.addEventListener('click', () => {
+    try { localStorage.removeItem('inkwell-admin-key'); } catch { /* private mode */ }
+    input.value = '';
+    renderAdminBadge();
+    if (!posts.length) renderEmpty();
+  });
+}
+bindAdminKeyInput();
+
 ui.searchInput?.addEventListener('input', (e) => performSearch(e.target.value));
 ui.searchInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && ui.searchInput.value) {
@@ -678,6 +689,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+window.addEventListener('beforeunload', () => {
+  if (saveTimer) save();
+});
+
 // --- hotkey overlay: hold Cmd/Ctrl to view, release to dismiss -----------
 
 document.addEventListener('keydown', (e) => {
@@ -740,29 +755,73 @@ async function start() {
   if (savedSize >= 12 && savedSize <= 48) setFontSize(savedSize);
   posts = await api('GET', '/api/posts');
   if (!posts.length) {
-    const post = await api('POST', '/api/posts', { title: '', content: '' });
-    current = post;
-    mergeSummary(post);
-    renderEditor();
+    // Empty state. Do NOT auto-POST — the server is fail-closed by design
+    // (every write needs INKWELL_ADMIN_KEY on the server) and a 401 here
+    // is a confusing "Could not reach the server" to a reader who never
+    // asked to write anything. Show the empty state instead; the menu's
+    // settings row is where the admin key lives if the user wants to
+    // create the first post.
+    renderEmpty();
   } else {
     await selectPost(posts[0].id);
   }
   renderList();
+  renderAdminBadge();
 }
 
-// Begin the relative-time refresh loop once the app is alive.
-startSavedAgoTicker();
+// Two-state empty view: a reader with no posts sees a quiet invitation to
+// read what exists; an admin sees the same invitation plus a "Create new"
+// button that calls the existing flow. The button is the only thing
+// different between the two states, so a missing key is the difference
+// between "you can write" and "you can read" — made obvious.
+function renderEmpty() {
+  if (!ui.empty) return;
+  const canCreate = hasAdminKey();
+  ui.empty.innerHTML = canCreate
+    ? '<p class="empty-msg">No posts yet.</p><button id="empty-create" class="btn" type="button">+ new post</button>'
+    : '<p class="empty-msg">No posts yet.</p><p class="empty-hint">Add an admin key in the <kbd>⋯</kbd> menu to create one.</p>';
+  ui.empty.hidden = false;
+  const btn = document.getElementById('empty-create');
+  if (btn) btn.addEventListener('click', () => createNewPost());
+}
 
-// Warn before leaving with unsaved changes — the 800ms debounce means a
-// keystroke right before the user closes the tab can be lost. Browsers
-// ignore the custom message and show their own; returning a non-empty
-// string is the trigger.
-window.addEventListener('beforeunload', (e) => {
-  if (saveTimer || pendingSave) {
-    e.preventDefault();
-    e.returnValue = '';
+async function createNewPost() {
+  try {
+    const post = await api('POST', '/api/posts', { title: '', content: '' });
+    current = post;
+    mergeSummary(post);
+    ui.empty.hidden = true;
+    renderEditor();
+    renderList();
+  } catch (err) {
+    // Most likely cause: the key was cleared in another tab. Drop back to
+    // the empty state so the user gets a clear "key required" message.
+    console.warn(err);
+    if (ui.empty) {
+      ui.empty.innerHTML = '<p class="empty-msg">Could not create post.</p><p class="empty-hint">Check the admin key in the <kbd>⋯</kbd> menu.</p>';
+      ui.empty.hidden = false;
+    }
   }
-});
+}
+
+// A small topbar marker so an admin never wonders "is my key set?". The
+// label disappears the moment the key is cleared in this tab.
+function renderAdminBadge() {
+  let badge = document.getElementById('admin-badge');
+  if (!hasAdminKey()) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'admin-badge';
+    badge.className = 'meta admin-badge';
+    badge.title = 'INKWELL_ADMIN_KEY is set in this tab';
+    badge.textContent = 'admin';
+    const spacer = document.querySelector('.topbar-right') || document.querySelector('header');
+    if (spacer) spacer.appendChild(badge);
+  }
+}
 
 start().catch((err) => {
   console.error(err);
