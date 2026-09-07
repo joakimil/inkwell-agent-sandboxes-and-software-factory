@@ -100,12 +100,13 @@ execute RUN_ID PROMPT CONFIG="" ADW="sdlc" *EXTRA:
     #
     # --shell bash --shell-arg -c is mandatory too: the repo's justfile sets
     # shell := ["zsh", "-ic"] and zsh is not in the exeuntu image (installing it
-    # is ~35s of apt for no benefit). `adw sdlc` is the module recipe.
+    # is ~35s of apt for no benefit). The canonical exposes workflows at top
+    # level (`just sdlc`, `just plan-build`), so no `adw` module prefix.
     #
     # NOTE: run.log is truncated on every execute — one detached SDLC per
     # sandbox at a time is the intended shape. Pull the old log first if you
     # care about it.
-    echo "→ execute {{RUN_ID}} on $VM (detached): adw {{ADW}} $PROMPT"
+    echo "→ execute {{RUN_ID}} on $VM (detached): {{ADW}} $PROMPT"
     # tail -n 1: the PID is the last thing printed, so any stray remote stdout
     # (a shell rc that talks, an motd) does not corrupt the capture.
     # The trailing `< /dev/null` on the LOCAL ssh is separate from the one inside
@@ -113,7 +114,7 @@ execute RUN_ID PROMPT CONFIG="" ADW="sdlc" *EXTRA:
     # SDLC from its stdin; this outer one stops ssh reading the CALLER's stdin.
     # Without it a `while read ... done < arms.map` loop around this recipe runs
     # exactly once — ssh eats the rest of the map and the loop sees EOF.
-    PID=$(ssh "$VM".exe.xyz "cd app && ( nohup just --shell bash --shell-arg -c adw {{ADW}} $Q$CFG_ARG {{EXTRA}} > run.log 2>&1 < /dev/null & echo \$! )" < /dev/null | tail -n 1)
+    PID=$(ssh "$VM".exe.xyz "cd app && ( nohup just --shell bash --shell-arg -c {{ADW}} $Q$CFG_ARG {{EXTRA}} > run.log 2>&1 < /dev/null & echo \$! )" < /dev/null | tail -n 1)
 
     # A non-numeric answer means the remote shell printed an error where the PID
     # should be. Fail here rather than writing garbage into the record.
