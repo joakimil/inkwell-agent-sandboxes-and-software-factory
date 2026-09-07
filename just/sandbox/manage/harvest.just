@@ -86,6 +86,22 @@ harvest RUN_ID:
     scp "${SSH_OPTS[@]}" -q "$VM".exe.xyz:/tmp/harvest.bundle "$BUNDLE" \
         || { echo "!! harvest: could not copy the bundle off $VM — VM left alone"; exit 1; }
 
+    # Defense in depth: also pull the working-tree diff. The bundle covers
+    # committed changes on the run branch; this covers files the documenter
+    # wrote to the working tree but did not `git add` (a fix that we shipped
+    # separately in the documenter prompt, but humans are humans).
+    # Empty patch = the working tree was clean, which is the common case.
+    if ssh "${SSH_OPTS[@]}" "$VM".exe.xyz 'cd app && git diff --quiet' 2>/dev/null; then
+        echo "   harvest: working tree was clean (the documenter committed everything)"
+    else
+        if ssh "${SSH_OPTS[@]}" "$VM".exe.xyz 'cd app && git diff > /tmp/harvest.working-tree.patch' \
+            && scp "${SSH_OPTS[@]}" -q "$VM".exe.xyz:/tmp/harvest.working-tree.patch "$BUNDLE.patch"; then
+            echo "   harvest: captured working-tree diff as $BUNDLE.patch (apply with: git apply $BUNDLE.patch)"
+        else
+            echo "!! harvest: could not capture working-tree diff (likely transient ssh failure)"
+        fi
+    fi
+
     # Verify BEFORE fetching. This is where a bundle whose base the host does not
     # have fails, and it fails loudly rather than importing something detached.
     if ! git bundle verify "$BUNDLE" > /dev/null 2>&1; then

@@ -52,6 +52,31 @@ execute RUN_ID PROMPT CONFIG="" ADW="sdlc" *EXTRA:
     VM=$("$RR" get {{RUN_ID}} vm_name)
     [ -n "$VM" ] || { echo "execute {{RUN_ID}}: no vm_name in the run record — is it mounted?" >&2; exit 1; }
 
+    # ADW override may arrive in EXTRA as either a 4th positional ("sdlc",
+    # "document", "plan-build-test") OR as a named flag ("ADW=document"). Walk
+    # EXTRA, strip any ADW=* token, and let the named flag win over the 4th
+    # positional when both are present. Anything else in EXTRA is forwarded
+    # verbatim to the ADW recipe (most usefully --adw-id <id>).
+    ADW_FROM_EXTRA=""
+    FILTERED_EXTRA=()
+    for tok in "$@"; do
+        case "$tok" in
+            ADW=*) ADW_FROM_EXTRA="${tok#ADW=}" ;;
+            *)      FILTERED_EXTRA+=("$tok") ;;
+        esac
+    done
+    # Rebuild $@ so the for-loop above (which is pre-`shift` in bash) still
+    # sees every positional; this is a no-op for shell semantics but keeps
+    # the next use of "$*" correct.
+    if [ -n "$ADW_FROM_EXTRA" ]; then
+        # 4th positional wins over the named flag only if EXTRA is empty —
+        # i.e. the user passed it as an explicit arg, which we treat as
+        # the canonical form. ADW=* is the shortcut and overrides the
+        # default but yields to the explicit positional.
+        set -- "$@" "$ADW_FROM_EXTRA"
+    fi
+    set -- "''" "${FILTERED_EXTRA[@]}"
+
     # quote() hands bash a correct single-quoted literal, so apostrophes in the
     # prompt survive hop 1 (just -> host bash). printf %q then survives hop 2
     # (host bash -> the remote login shell), which parses the ssh command string.

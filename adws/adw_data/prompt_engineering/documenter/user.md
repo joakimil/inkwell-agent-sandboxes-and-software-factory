@@ -27,6 +27,9 @@ Document the completed work described by `previous_envelope`, using `prompt` for
    - **Copy it, do not retype it.** One bash call does the whole step:
      `mkdir -p app_docs && cp "<context_handoff_dir>/document.md" "app_docs/<adw_id>_<slug>.md"`
      Writing the document a second time through `write` re-emits every line you already wrote, which costs the whole write-up again in output tokens and lets the two copies drift.
+   - **Stage the file too.** The harvest step in the lifecycle only picks up **committed** files, so a working-tree `app_docs/<adw_id>_<slug>.md` is invisible to the host after teardown. One line after the `cp`:
+     `git add "app_docs/<adw_id>_<slug>.md"`
+     (Do **not** `git commit` — the lifecycle's commit phase will do that, and committing twice produces an empty merge.)
 4. Emit your `Report` JSON, declaring BOTH paths in `artifacts`.
 
 ## Report

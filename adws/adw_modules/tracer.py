@@ -96,7 +96,28 @@ MIGRATIONS = [("agent_sessions", "color", "TEXT"),
               ("sessions", "adw_name", "TEXT"),
               ("agent_sessions", "context_tokens", "INTEGER"),
               ("agent_sessions", "context_window", "INTEGER"),
-              ("sessions", "archived", "INTEGER DEFAULT 0")]
+              ("sessions", "archived", "INTEGER DEFAULT 0"),
+              ("phases", "duration_ms", "INTEGER")]
+
+
+def _ms_between(started, ended):
+    """Integer milliseconds between two ISO strings, or None if either is missing.
+
+    The tracer writes the `started_at` column on phase_start and `ended_at` on
+    phase_end; both fields are stored as ISO 8601 strings. SQL can compute the
+    diff with julianday() at read time, but for the swim-lanes view (one
+    render per poll) we want the value ready in the column so the view does
+    not pay a parse cost per row per tick.
+    """
+    if not started or not ended:
+        return None
+    from datetime import datetime
+    try:
+        s = datetime.fromisoformat(started)
+        e = datetime.fromisoformat(ended)
+    except (TypeError, ValueError):
+        return None
+    return max(0, int((e - s).total_seconds() * 1000))
 
 
 class Tracer:
@@ -219,13 +240,17 @@ class Tracer:
         p = phase.params
         self.conn.execute(
             "INSERT INTO phases (phase_id, adw_id, seq, name, kind, owner, description,"
-            " status, attempt, retries, error, started_at, ended_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " status, attempt, retries, error, started_at, ended_at, duration_ms)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(phase_id) DO UPDATE SET status=excluded.status,"
-            " attempt=excluded.attempt, error=excluded.error, ended_at=excluded.ended_at",
+            " attempt=excluded.attempt, error=excluded.error, ended_at=excluded.ended_at,"
+            " duration_ms=excluded.duration_ms",
             (phase.phase_id, phase.adw_id, phase.seq, p.name, p.kind, p.owner,
              p.description, phase.status, phase.attempt, p.retries, phase.error,
-             phase.started_at, phase.ended_at),
+             phase.started_at, phase.ended_at,
+             # Duration in ms (rounded), or NULL if either timestamp is missing.
+             # (int() handles the ISO-string -> datetime path the engine emits.)
+             _ms_between(phase.started_at, phase.ended_at)),
         )
 
     # ── envelopes / gates / agent sessions ──────────────────────────────────
