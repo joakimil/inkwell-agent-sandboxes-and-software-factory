@@ -42,6 +42,8 @@ const menu = {
 let posts = [];        // sidebar summaries, newest first
 let current = null;    // full post being edited
 let saveTimer = null;
+let lastSavedAt = null;        // ms timestamp; drives the "saved Ns ago" display
+let savedAgoTimer = null;      // setInterval handle for the relative-time refresh
 let pendingSave = null;
 let focusMode = false;
 let fontSize = 19;
@@ -360,9 +362,34 @@ function updateTotals() {
   ui.totalWords.textContent = `${totalWords} ${totalWords === 1 ? 'word' : 'words'}`;
 }
 
+function formatSavedAgo(ms) {
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 5) return 'saved just now';
+  if (s < 60) return `saved ${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `saved ${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `saved ${h}h ago`;
+}
+
 function setSaveState(state) {
-  ui.save.textContent = state;
+  // When we are settled (no timer running, no in-flight request) and a save
+  // timestamp exists, prefer the relative-time form. Any other state — saving,
+  // save failed, no save yet — renders verbatim so the user sees exactly what
+  // the system is doing.
+  if (state === 'saved' && lastSavedAt && !saveTimer && !pendingSave) {
+    ui.save.textContent = formatSavedAgo(lastSavedAt);
+  } else {
+    ui.save.textContent = state;
+  }
   ui.save.classList.toggle('busy', state !== 'saved');
+}
+
+// Re-render the "saved Ns ago" label every 30s so it stays fresh without
+// forcing a re-save. Cheap; runs only when the indicator is in its idle form.
+function startSavedAgoTicker() {
+  if (savedAgoTimer) return;
+  savedAgoTimer = setInterval(() => setSaveState('saved'), 30_000);
 }
 
 // --- data flow ------------------------------------------------------------
@@ -393,6 +420,7 @@ async function save() {
     .then((post) => {
       if (current && current.id === post.id) current = post;
       mergeSummary(post);
+      lastSavedAt = Date.now();
       setSaveState('saved');
     })
     .catch((err) => {
@@ -650,10 +678,6 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-window.addEventListener('beforeunload', () => {
-  if (saveTimer) save();
-});
-
 // --- hotkey overlay: hold Cmd/Ctrl to view, release to dismiss -----------
 
 document.addEventListener('keydown', (e) => {
@@ -725,6 +749,20 @@ async function start() {
   }
   renderList();
 }
+
+// Begin the relative-time refresh loop once the app is alive.
+startSavedAgoTicker();
+
+// Warn before leaving with unsaved changes — the 800ms debounce means a
+// keystroke right before the user closes the tab can be lost. Browsers
+// ignore the custom message and show their own; returning a non-empty
+// string is the trigger.
+window.addEventListener('beforeunload', (e) => {
+  if (saveTimer || pendingSave) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 start().catch((err) => {
   console.error(err);
